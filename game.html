@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Dashfall</title>
+<style>
+  html, body { margin:0; padding:0; background:#222; overflow:hidden; font-family: Arial, sans-serif; height:100%; }
+  canvas { display:block; background:#111; }
+  .overlay {
+    position: fixed; inset: 0; display:flex; flex-direction:column; justify-content:center; align-items:center;
+    background: rgba(34,34,34,0.95); color:#fff; z-index:10;
+  }
+  .hidden { display:none !important; }
+  button {
+    margin:10px; padding:14px 26px; font-size:18px; border:none; border-radius:0; cursor:pointer; transition:transform .08s;
+  }
+  button:active { transform: scale(0.98); }
+  .startBtn { background:#22c55e; color:#000; }
+  .highScoreBtn { background:#3b82f6; color:#fff; }
+  .resetBtn { background:#ef4444; color:#fff; }
+  .confirmResetBtn { background:#991b1b; color:#fff; }
+  .pauseBtn {
+    position: fixed; top:10px; right:10px; background:#f59e0b; color:#000; padding:10px 16px; border-radius:0; font-size:16px; z-index:9;
+  }
+  #menuTip {
+    position:absolute; bottom:20px; width:100%; text-align:center; font-size:18px; opacity:0; transition: opacity 0.5s;
+  }
+  #challengeDisplay {
+    position:absolute; top:10px; width:100%; text-align:center; font-size:20px; color:yellow; pointer-events:none;
+  }
+  #challengeTimer {
+    position:absolute; top:40px; width:100%; text-align:center; font-size:18px; color:#fff; pointer-events:none;
+  }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<!-- Main Menu -->
+<div id="mainMenu" class="overlay">
+  <h1 style="margin-bottom:8px;">Dashfall</h1>
+  <p id="menuBest" style="margin:0 0 20px 0; opacity:0.8;"></p>
+  <div>
+    <button class="startBtn" id="startBtn">START</button>
+    <button class="highScoreBtn" id="hsBtn">HIGH SCORE</button>
+    <button class="resetBtn" id="resetBtn">RESET</button>
+  </div>
+  <p style="opacity:.7; margin-top:18px;">WASD to move • Space = boost • P = pause</p>
+  <p id="menuTip"></p>
+</div>
+
+<!-- Pause Menu -->
+<div id="pauseMenu" class="overlay hidden">
+  <h1>Paused</h1>
+  <div>
+    <button id="resumeBtn">Return</button>
+    <button id="menuBtn">Go back to menu</button>
+  </div>
+</div>
+
+<!-- High Score Menu -->
+<div id="highScoreMenu" class="overlay hidden">
+  <h1>High Score</h1>
+  <p id="highScoreText" style="font-size:24px; margin:10px 0 20px 0;"></p>
+  <button id="closeHsBtn">Back</button>
+</div>
+
+<!-- Reset Menu -->
+<div id="resetMenu" class="overlay hidden">
+  <h1>Reset Progress</h1>
+  <p style="max-width:700px; text-align:center; line-height:1.4;">
+    This is an irreversible action with significant consequences. The high score you have painstakingly achieved, which represents your effort, skill, and dedication, is stored in a secure location. By initiating this process, you are consenting to its permanent deletion.<br><br>
+    The countdown is a final warning, providing you with a brief window of opportunity to reconsider your decision. Once the timer reaches zero, the system will prompt you for a final confirmation. At that point, by proceeding, you will permanently erase all record of your high score. There is no undo function, and the data cannot be recovered. We urge you to fully consider the gravity of this choice before you confirm.
+  </p>
+  <p id="resetCountdown" style="font-size:22px; margin:10px 0 14px 0;">Wait 15 seconds...</p>
+  <div>
+    <button class="confirmResetBtn hidden" id="finalResetBtn">Confirm Reset</button>
+    <button id="cancelResetBtn">Cancel</button>
+  </div>
+</div>
+
+<button id="pauseBtn" class="pauseBtn hidden">Pause</button>
+
+<!-- Challenge Display -->
+<p id="challengeDisplay"></p>
+<p id="challengeTimer"></p>
+
+<script>
+/* ===========================
+   Dashfall — Full Game Code
+   All features requested are included:
+   - Menu, pause, high score, reset (15s warning)
+   - Rotating tips in menu with fade
+   - Player (yellow square) movement and boost (Space)
+   - Green/Orange/Purple cubes with spawns and despawn (12s)
+   - Score system: 5 greens = 1 score, orange = 1, purple = 3
+   - Difficulty scaling every 10 score: speed x1.1, orange chance +2%, green spawn -0.05s
+   - Purple spawn (1s & 1m) with scaling
+   - Challenge system (20s challenges every 20s)
+   - Starvation death when at min size for 5s
+   - Shrink multiplier: 1.02^score applied to shrink rate; displayed on HUD
+   - Save high score to localStorage; reset option to clear
+   =========================== */
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+function resize(){ canvas.width = innerWidth; canvas.height = innerHeight; }
+addEventListener('resize', resize);
+resize();
+
+/* ===== UI Elements ===== */
+const mainMenu = document.getElementById('mainMenu');
+const pauseMenu = document.getElementById('pauseMenu');
+const highScoreMenu = document.getElementById('highScoreMenu');
+const resetMenu = document.getElementById('resetMenu');
+const pauseBtn = document.getElementById('pauseBtn');
+
+const startBtn = document.getElementById('startBtn');
+const hsBtn = document.getElementById('hsBtn');
+const closeHsBtn = document.getElementById('closeHsBtn');
+const resetBtn = document.getElementById('resetBtn');
+const finalResetBtn = document.getElementById('finalResetBtn');
+const cancelResetBtn = document.getElementById('cancelResetBtn');
+const resumeBtn = document.getElementById('resumeBtn');
+const menuBtn = document.getElementById('menuBtn');
+const menuBest = document.getElementById('menuBest');
+const highScoreText = document.getElementById('highScoreText');
+const resetCountdown = document.getElementById('resetCountdown');
+const menuTip = document.getElementById('menuTip');
+const challengeDisplay = document.getElementById('challengeDisplay');
+const challengeTimer = document.getElementById('challengeTimer');
+
+/* ===== Game Constants & State ===== */
+const BASE_GREEN_SPAWN_INTERVAL = 1000; // ms
+const BASE_ORANGE_CHANCE = 0.20; // 20% every 5s
+const BASE_PURPLE_1S = 0.01; // 1% per 1s
+const BASE_PURPLE_1M = 0.10; // 10% per 1m
+const GREEN_VALUE = 5; // size gain per green
+const ORANGE_MULT = 5; // orange is 5x bigger / value of green
+const PURPLE_MULT_ORANGE = 2; // purple size = 2x orange
+const PURPLE_VALUE_MULT_ORANGE = 3; // purple gives 3x orange's value (so 3 * orange points)
+const CUBE_LIFETIME = 12000; // ms
+const MIN_SIZE = 5;
+const STARVE_TIME = 5000; // ms at min size to die
+const CHALLENGE_DURATION = 20000; // 20s
+
+let gameState = 'menu'; // 'menu' | 'playing' | 'paused'
+let player, cubes, score, best, greenEaten, timeAtMinSize;
+let lastGreenSpawn = 0, lastOrangeCheck = 0, lastPurpleCheck1s = 0, lastPurpleCheck1m = 0;
+let resetTimerId = null;
+best = parseInt(localStorage.getItem('highScore')) || 0;
+menuBest.textContent = `Best: ${best}`;
+
+/* ===== Input ===== */
+const keys = {};
+addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+
+  if (k === 'p') {
+    if (gameState === 'playing') pauseGame();
+    else if (gameState === 'paused') resumeGame();
+  }
+
+  // Restart when dead
+  if ((k === 'r') && gameState === 'playing' && player && !player.alive) {
+    startGame();
+  }
+});
+addEventListener('keyup', (e) => { keys[e.key.toLowerCase()] = false; });
+
+/* ===== Menus / UI helpers ===== */
+function show(el){ if (el) el.classList.remove('hidden'); }
+function hide(el){ if (el) el.classList.add('hidden'); }
+
+/* ===== Start / Pause / Menu functions ===== */
+function startGame(){
+  gameState = 'playing';
+  hide(mainMenu); hide(pauseMenu); hide(highScoreMenu); hide(resetMenu);
+  show(pauseBtn);
+
+  player = { x: canvas.width/2, y: canvas.height/2, size: 20, baseSpeed: 3, alive: true };
+  cubes = [];
+  score = 0;
+  greenEaten = 0;
+  timeAtMinSize = 0;
+
+  lastGreenSpawn = 0;
+  lastOrangeCheck = 0;
+  lastPurpleCheck1s = 0;
+  lastPurpleCheck1m = 0;
+
+  // spawn 10 green at start
+  for (let i=0;i<10;i++) spawnGreen();
+
+  startChallengeSystem();
+}
+
+function pauseGame(){
+  if (gameState !== 'playing') return;
+  gameState = 'paused';
+  show(pauseMenu);
+  hide(pauseBtn);
+}
+function resumeGame(){
+  if (gameState !== 'paused') return;
+  gameState = 'playing';
+  hide(pauseMenu);
+  show(pauseBtn);
+}
+function goToMenu(){
+  gameState = 'menu';
+  hide(pauseMenu); hide(highScoreMenu); hide(resetMenu);
+  show(mainMenu);
+  hide(pauseBtn);
+  menuBest.textContent = `Best: ${best}`;
+}
+function showHighScore(){
+  hide(mainMenu);
+  show(highScoreMenu);
+  highScoreText.textContent = `Best Score: ${best}`;
+}
+function closeHighScore(){ hide(highScoreMenu); show(mainMenu); }
+
+/* ===== Reset flow ===== */
+function startReset(){
+  hide(mainMenu);
+  show(resetMenu);
+  if (resetTimerId) clearInterval(resetTimerId);
+  let t = 15;
+  resetCountdown.textContent = `Wait ${t} seconds...`;
+  finalResetBtn.classList.add('hidden');
+  resetTimerId = setInterval(()=>{
+    t--;
+    if (t > 0){
+      resetCountdown.textContent = `Wait ${t} seconds...`;
+    } else {
+      clearInterval(resetTimerId);
+      resetCountdown.textContent = `Now you can reset.`;
+      finalResetBtn.classList.remove('hidden');
+    }
+  }, 1000);
+}
+function confirmReset(){
+  localStorage.removeItem('highScore');
+  best = 0;
+  cancelReset();
+}
+function cancelReset(){
+  if (resetTimerId) clearInterval(resetTimerId);
+  finalResetBtn.classList.add('hidden');
+  hide(resetMenu);
+  show(mainMenu);
+  menuBest.textContent = `Best: ${best}`;
+}
+
+/* ===== Tips (menu) ===== */
+const tips = [
+  "Focus on collecting green cubes first to maintain size.",
+  "Avoid boosting when at low size, it shrinks you faster.",
+  "Move toward clusters of cubes rather than chasing singles.",
+  "Use the spacebar boost strategically when safe.",
+  "Plan your path to avoid getting cornered by screen edges.",
+  "Prioritize orange cubes for more size and score.",
+  "Watch the purple cube spawn timer for rare opportunities.",
+  "Grab multiple cubes at once to save time and size.",
+  "Pause to assess the safest route if screen is crowded.",
+  "Deliberate movement conserves size and prevents mistakes.",
+  "Chain cube collections for score multipliers.",
+  "Expect more orange cubes as your score increases.",
+  "Use corners temporarily if too small to avoid spawns.",
+  "Check HUD for green spawn interval and orange chance.",
+  "Early game, avoid constant boosting to conserve size.",
+  "Green and orange cubes disappear after 12 seconds; timing matters.",
+  "Eating five green cubes in a row gives an extra point.",
+  "Purple cubes give 3 points; prioritize if safe.",
+  "Avoid unnecessary collisions when low on size.",
+  "Practice weaving between cubes for continuous growth.",
+  "Move slowly near minimum size to prioritize survival.",
+  "Use boosts in open areas to cover distance safely.",
+  "Plan escape routes when chasing rare cubes.",
+  "Stay near the center for more flexible movement.",
+  "Predict orange cube spawns every 5 seconds.",
+  "Watch speed multiplier; higher speed helps chase but is risky.",
+  "Learn timing of cube spawns to intercept clusters.",
+  "Avoid boosting straight into edges to prevent losing size.",
+  "Resetting progress deletes all data permanently; be careful.",
+  "Track your high score to improve survival and strategies."
+];
+function showRandomTip() {
+  const randomTip = tips[Math.floor(Math.random() * tips.length)];
+  menuTip.style.opacity = 0;
+  setTimeout(() => {
+    menuTip.textContent = randomTip;
+    menuTip.style.opacity = 1;
+  }, 500);
+}
+setInterval(showRandomTip, 5000);
+showRandomTip();
+
+/* ===== Spawns ===== */
+function spawnGreen(){
+  const s = 10;
+  cubes.push({
+    x: Math.random() * (canvas.width - s),
+    y: Math.random() * (canvas.height - s),
+    size: s,
+    type: 'green',
+    spawnTime: performance.now()
+  });
+}
+function spawnOrange(){
+  const s = 10 * ORANGE_MULT; // 50 if ORANGE_MULT=5
+  cubes.push({
+    x: Math.random() * (canvas.width - s),
+    y: Math.random() * (canvas.height - s),
+    size: s,
+    type: 'orange',
+    spawnTime: performance.now()
+  });
+}
+function spawnPurple(){
+  const orangeSize = 10 * ORANGE_MULT;
+  const s = orangeSize * PURPLE_MULT_ORANGE; // 100 if orangeSize=50 and PURPLE_MULT_ORANGE=2
+  cubes.push({
+    x: Math.random() * (canvas.width - s),
+    y: Math.random() * (canvas.height - s),
+    size: s,
+    type: 'purple',
+    spawnTime: performance.now()
+  });
+}
+
+/* ===== Challenges ===== */
+const challengeList = [
+  {text:"Eat at least 15 green cubes.", check:(st)=>st.green>=15, points:3},
+  {text:"Eat at least 3 orange cubes.", check:(st)=>st.orange>=3, points:3},
+  {text:"Eat at least 5 orange cubes.", check:(st)=>st.orange>=5, points:5},
+  {text:"Eat at least 10 green cubes.", check:(st)=>st.green>=10, points:2},
+  {text:"Eat at least 1 purple cube.", check:(st)=>st.purple>=1, points:5},
+  {text:"Eat at least 5 cubes while holding space bar.", check:(st)=>st.boostEaten>=5, points:2},
+  {text:"Collect a green, orange, and purple cube.", check:(st)=>st.green>=1&&st.orange>=1&&st.purple>=1, points:5},
+  {text:"Eat at least 15 cubes.", check:(st)=>st.total>=15, points:3},
+  {text:"Don't use the speed boost (spacebar).", check:(st)=>st.usedBoost===false, points:2},
+  {text:"Hold the speed boost for 20 seconds straight.", check:(st)=>st.boostHoldContinuous>=20000, points:5},
+  {text:"Travel from the top half of the screen to the bottom half.", check:(st)=>st.topHalf && st.bottomHalf, points:2},
+  {text:"Do not touch the edges of the screen.", check:(st)=>st.edgeTouch===false, points:1},
+  {text:"Hold W, A, S, or D consistently.", check:(st)=>st.contHold>=20000, points:5},
+  {text:"Don't move.", check:(st)=>st.moved===false, points:5},
+  {text:"Only move left and right.", check:(st)=>st.onlyLR===true, points:4},
+  {text:"Don't eat any cubes.", check:(st)=>st.total===0, points:5},
+  {text:"Do not let your square's size shrink past half of its current size.", check:(st)=>st.minSizeHold, points:2},
+  {text:"Don't eat any green cubes.", check:(st)=>st.green===0, points:3},
+  {text:"Survive eating only orange cubes.", check:(st)=>st.green===0&&st.orange>0, points:3},
+  {text:"Reach a size larger than your starting size.", check:(st)=>st.startSizeExceeded===true, points:2}
+];
+
+let currentChallenge = null;
+let challengeProgress = null;
+let challengeStartTime = 0;
+
+function startChallengeSystem(){
+  pickNewChallenge();
+}
+function pickNewChallenge(){
+  currentChallenge = challengeList[Math.floor(Math.random()*challengeList.length)];
+  challengeProgress = {
+    green:0, orange:0, purple:0, boostEaten:0, usedBoost:false,
+    boostHoldContinuous:0, boostHoldStart:0,
+    total:0, topHalf:false, bottomHalf:false, edgeTouch:false,
+    contHold:0, currentHeldKey:null, moved:false, onlyLR:true,
+    minSizeHold:true, startSize: player ? player.size : 20, startSizeExceeded:false
+  };
+  challengeStartTime = performance.now();
+  challengeDisplay.textContent = currentChallenge.text;
+  // Also show initial timer
+  challengeTimer.textContent = `Challenge Timer: ${Math.floor(CHALLENGE_DURATION/1000)}s`;
+}
+
+function updateChallenge(dt){
+  if(!player || !player.alive) return;
+  if(!currentChallenge) return;
+  const now = performance.now();
+  const elapsed = now - challengeStartTime;
+  challengeTimer.textContent = `Challenge Timer: ${Math.max(0,Math.ceil((CHALLENGE_DURATION-elapsed)/1000))}s`;
+
+  // top/bottom
+  challengeProgress.topHalf = challengeProgress.topHalf || (player.y < canvas.height/2);
+  challengeProgress.bottomHalf = challengeProgress.bottomHalf || (player.y > canvas.height/2);
+
+  // edge touch
+  const touchingEdge = (player.x - player.size/2 <= 0) || (player.x + player.size/2 >= canvas.width) || (player.y - player.size/2 <= 0) || (player.y + player.size/2 >= canvas.height);
+  challengeProgress.edgeTouch = challengeProgress.edgeTouch || touchingEdge;
+
+  // moved / onlyLR / contHold
+  const dirKeys = ['w','a','s','d'];
+  const heldDirections = dirKeys.filter(k => keys[k]);
+  if (heldDirections.length > 0) {
+    challengeProgress.moved = true;
+    // only left-right check
+    if (keys['w'] || keys['s']) challengeProgress.onlyLR = false;
+  }
+
+  // continuous hold of a single WASD
+  if (heldDirections.length === 1) {
+    const k = heldDirections[0];
+    if (challengeProgress.currentHeldKey === k) {
+      challengeProgress.contHold += dt;
+    } else {
+      challengeProgress.currentHeldKey = k;
+      challengeProgress.contHold = dt;
+    }
+  } else {
+    // either zero or multiple pressed -> reset continuous hold
+    challengeProgress.currentHeldKey = null;
+    challengeProgress.contHold = 0;
+  }
+
+  // boost continuous hold
+  if (keys[' ']) {
+    challengeProgress.usedBoost = true;
+    challengeProgress.boostHoldContinuous += dt;
+    // track usedBoost for "Don't use boost" challenge
+  } else {
+    // if broken, continuous resets
+    challengeProgress.boostHoldContinuous = 0;
+  }
+
+  // min size hold: should not shrink past half of startSize
+  if (player.size < (challengeProgress.startSize / 2)) {
+    challengeProgress.minSizeHold = false;
+  }
+  // startSizeExceeded flag (challenge 20)
+  if (player.size > challengeProgress.startSize) challengeProgress.startSizeExceeded = true;
+
+  // elapsed check -> finalize challenge
+  if (elapsed >= CHALLENGE_DURATION) {
+    try {
+      if (currentChallenge.check(challengeProgress)) {
+        score += currentChallenge.points;
+        // update best & storage after awarding
+        if (score > best) { best = score; localStorage.setItem('highScore', best); }
+      }
+    } catch(e) { /* ignore check errors */ }
+    // immediately start next challenge
+    pickNewChallenge();
+  }
+}
+
+/* ===== Utility: compute dynamic values from score ===== */
+function getScoreLevel() {
+  return Math.floor(score / 10);
+}
+function getSpeedBoostFromScore() {
+  return Math.pow(1.1, getScoreLevel());
+}
+function getOrangeChanceFromScore() {
+  return Math.min(0.2 + getScoreLevel() * 0.02, 0.5);
+}
+function getGreenSpawnIntervalFromScore() {
+  return Math.max(300, BASE_GREEN_SPAWN_INTERVAL - getScoreLevel()*50);
+}
+function getPurpleChance1sFromScore() {
+  return BASE_PURPLE_1S + getScoreLevel()*0.001; // +0.1% per 10 score
+}
+function getPurpleChance1mFromScore() {
+  return BASE_PURPLE_1M + getScoreLevel()*0.005; // +0.5% per 10 score
+}
+
+/* ===== Update & Draw ===== */
+let lastTime = performance.now();
+function update(dt, now){
+  if (gameState !== 'playing' || !player.alive) return;
+
+  // update challenges first
+  updateChallenge(dt);
+
+  // dynamic values
+  const speedBoost = getSpeedBoostFromScore();
+  const greenSpawnInterval = getGreenSpawnIntervalFromScore();
+  const orangeChance = getOrangeChanceFromScore();
+  const purpleChance1s = getPurpleChance1sFromScore();
+  const purpleChance1m = getPurpleChance1mFromScore();
+
+  // movement
+  const atMin = (player.size <= MIN_SIZE + 0.01);
+  const speedMult = (keys[' '] && !atMin) ? 2 : 1;
+  const shrinkBoostMult = (keys[' '] && !atMin) ? 2 : 1;
+  const speed = player.baseSpeed * speedBoost * speedMult;
+
+  if (keys['w'] && player.y - player.size/2 > 0) player.y -= speed * (dt / 16.67);
+  if (keys['s'] && player.y + player.size/2 < canvas.height) player.y += speed * (dt / 16.67);
+  if (keys['a'] && player.x - player.size/2 > 0) player.x -= speed * (dt / 16.67);
+  if (keys['d'] && player.x + player.size/2 < canvas.width) player.x += speed * (dt / 16.67);
+
+  // spawn green at adjusted interval
+  lastGreenSpawn += dt;
+  if (lastGreenSpawn > greenSpawnInterval) {
+    spawnGreen();
+    lastGreenSpawn = 0;
+  }
+
+  // orange spawn every 5 seconds
+  lastOrangeCheck += dt;
+  if (lastOrangeCheck > 5000) {
+    if (Math.random() < orangeChance) spawnOrange();
+    lastOrangeCheck = 0;
+  }
+
+  // purple small roll every 1s
+  lastPurpleCheck1s += dt;
+  if (lastPurpleCheck1s > 1000) {
+    if (Math.random() < purpleChance1s) spawnPurple();
+    lastPurpleCheck1s = 0;
+  }
+  // purple big roll every 60s
+  lastPurpleCheck1m += dt;
+  if (lastPurpleCheck1m > 60000) {
+    if (Math.random() < purpleChance1m) spawnPurple();
+    lastPurpleCheck1m = 0;
+  }
+
+  // despawn after 12s
+  for (let i = cubes.length-1; i>=0; i--) {
+    if (now - cubes[i].spawnTime > CUBE_LIFETIME) cubes.splice(i,1);
+  }
+
+  // collisions (axis-aligned)
+  for (let i = cubes.length-1; i>=0; i--) {
+    const c = cubes[i];
+    if (player.x - player.size/2 < c.x + c.size &&
+        player.x + player.size/2 > c.x &&
+        player.y - player.size/2 < c.y + c.size &&
+        player.y + player.size/2 > c.y) {
+
+      // Eat
+      if (c.type === 'green') {
+        player.size += GREEN_VALUE;
+        greenEaten++;
+        // challenge tracking
+        if (challengeProgress) { challengeProgress.green++; challengeProgress.total++; if (keys[' ']) challengeProgress.boostEaten++; }
+        // every 5 greens = 1 score
+        if (greenEaten >= 5) {
+          score += 1;
+          greenEaten = 0;
+        }
+      } else if (c.type === 'orange') {
+        player.size += GREEN_VALUE * ORANGE_MULT; // large boost
+        score += 1;
+        if (challengeProgress) { challengeProgress.orange++; challengeProgress.total++; if (keys[' ']) challengeProgress.boostEaten++; }
+      } else if (c.type === 'purple') {
+        // purple gives 3 score and huge size
+        player.size += GREEN_VALUE * ORANGE_MULT * PURPLE_VALUE_MULT_ORANGE; // e.g. if green=5, orange mult=5, purple mult=3 => +75
+        score += 3;
+        if (challengeProgress) { challengeProgress.purple++; challengeProgress.total++; if (keys[' ']) challengeProgress.boostEaten++; }
+      }
+
+      // update best and save
+      if (score > best) { best = Math.floor(score); localStorage.setItem('highScore', best); }
+
+      cubes.splice(i,1);
+    }
+  }
+
+  // Shrink: base per-second is GREEN_VALUE * shrinkBoostMult, scaled by score multiplier 1.02^score
+  const scoreShrinkMult = Math.pow(1.02, score);
+  const rawShrinkPerSecond = GREEN_VALUE * shrinkBoostMult * scoreShrinkMult; // units per second
+  player.size -= rawShrinkPerSecond * (dt / 1000);
+
+  if (player.size < MIN_SIZE) player.size = MIN_SIZE;
+
+  // starvation timer
+  if (player.size <= MIN_SIZE + 0.01) {
+    timeAtMinSize += dt;
+    if (timeAtMinSize >= STARVE_TIME) {
+      player.alive = false;
+      hide(pauseBtn);
+      // keep showing YOU STARVED — score saved earlier when increased; ensure high score saved
+      if (score > best) { best = Math.floor(score); localStorage.setItem('highScore', best); }
+    }
+  } else {
+    timeAtMinSize = 0;
+  }
+}
+
+/* ===== Draw ===== */
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  if (gameState === 'menu') {
+    // menu overlay is DOM-controlled; canvas can be blank or show subtle background
+    ctx.fillStyle = "#151515";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+  }
+
+  if (gameState === 'playing' || gameState === 'paused' || (player && !player.alive)) {
+    // Draw cubes
+    for (const c of cubes) {
+      if (c.type === 'green') ctx.fillStyle = 'green';
+      else if (c.type === 'orange') ctx.fillStyle = 'orange';
+      else ctx.fillStyle = 'purple';
+      ctx.fillRect(c.x, c.y, c.size, c.size);
+    }
+
+    // Draw player
+    if (player) {
+      ctx.fillStyle = 'yellow';
+      ctx.fillRect(player.x - player.size/2, player.y - player.size/2, player.size, player.size);
+    }
+
+    // HUD (top-left)
+    ctx.fillStyle = 'white';
+    ctx.font = '18px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${Math.floor(score)}`, 20, 30);
+    ctx.fillText(`Best: ${best}`, 20, 55);
+
+    // Speed multiplier and spawn data
+    const speedBoost = getSpeedBoostFromScore();
+    const greenSpawnInterval = getGreenSpawnIntervalFromScore();
+    const orangeChance = getOrangeChanceFromScore();
+    const purpleChance1s = getPurpleChance1sFromScore();
+    const purpleChance1m = getPurpleChance1mFromScore();
+
+    ctx.fillText(`Speed Multiplier: ${speedBoost.toFixed(2)}x`, 20, 80);
+    ctx.fillText(`Orange Chance: ${(orangeChance*100).toFixed(0)}%`, 20, 105);
+    ctx.fillText(`Green Spawn: ${(greenSpawnInterval/1000).toFixed(2)}s`, 20, 130);
+    ctx.fillText(`Purple (1s): ${(purpleChance1s*100).toFixed(2)}%`, 20, 155);
+    ctx.fillText(`Purple (1m): ${(purpleChance1m*100).toFixed(2)}%`, 20, 180);
+
+    // Shrink multiplier & raw rate
+    const scoreShrinkMult = Math.pow(1.02, score);
+    const shrinkBoostMult = (keys[' '] && player && player.size > MIN_SIZE+0.01) ? 2 : 1;
+    const rawShrinkPerSecond = GREEN_VALUE * shrinkBoostMult * scoreShrinkMult;
+    // color the multiplier
+    if (scoreShrinkMult < 3) ctx.fillStyle = 'lime';
+    else if (scoreShrinkMult < 10) ctx.fillStyle = 'orange';
+    else ctx.fillStyle = 'red';
+    ctx.fillText(`Shrink Rate: ${scoreShrinkMult.toFixed(2)}x (${rawShrinkPerSecond.toFixed(2)}/s)`, 20, 205);
+
+    // If dead show overlay text
+    if (player && !player.alive) {
+      ctx.fillStyle = 'red';
+      ctx.font = '64px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('YOU STARVED', canvas.width/2, canvas.height/2);
+      ctx.font = '28px Arial';
+      ctx.fillStyle = 'white';
+      ctx.fillText('Press R to Restart', canvas.width/2, canvas.height/2 + 50);
+    }
+  }
+}
+
+/* ===== Main Loop ===== */
+let prevTime = performance.now();
+function loop(now) {
+  const dt = now - prevTime;
+  prevTime = now;
+
+  update(dt, now);
+  draw();
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+/* ===== Button Hookups ===== */
+startBtn.onclick = startGame;
+hsBtn.onclick = showHighScore;
+closeHsBtn.onclick = closeHighScore;
+resetBtn.onclick = startReset;
+finalResetBtn.onclick = confirmReset;
+cancelResetBtn.onclick = cancelReset;
+resumeBtn.onclick = resumeGame;
+menuBtn.onclick = goToMenu;
+pauseBtn.onclick = pauseGame;
+
+/* ===== Persist high score on unload ===== */
+addEventListener('beforeunload', () => {
+  localStorage.setItem('highScore', best);
+});
+
+/* ===== Initial show menu ===== */
+show(mainMenu);
+hide(pauseBtn);
+
+/* ===== End of script ===== */
+</script>
+</body>
+</html>
